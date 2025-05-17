@@ -1,0 +1,105 @@
+type: beam:runner:portability:python:0.1
+sdk_pipeline_options:
+  runner: DataflowRunner
+  project: your-gcp-project-id
+  temp_location: gs://your-bucket-name/temp
+  region: us-central1
+
+inputs:
+  source_data:
+    type: beam:io:csv:read_csv
+    location: gs://your-bucket-name/input/dailyActivity_merged.csv
+    skip_header_lines: 1
+
+transforms:
+  format_columns:
+    type: beam:transform:map
+    input: source_data
+    language: python
+    script: |
+      from datetime import datetime
+      def format(row):
+          row['steps'] = int(row['TotalSteps'] or 0)
+          row['calories_burned'] = int(row['Calories'] or 0)
+          row['vam'] = int(row['VeryActiveMinutes'] or 0)
+          row['fam'] = int(row['FairlyActiveMinutes'] or 0)
+          row['lam'] = int(row['LightlyActiveMinutes'] or 0)
+          row['user'] = row['Id']
+          try:
+              d = datetime.strptime(row['ActivityDate'], "%m/%d/%Y")
+              row['biweek'] = ((d.timetuple().tm_yday - 1) // 14) + 1
+          except:
+              row['biweek'] = None
+          return row
+
+  enrich_data:
+    type: beam:transform:map
+    input: format_columns
+    language: python
+    script: |
+      def calculate(row):
+          total_minutes = row['vam'] + row['fam'] + row['lam']
+          row['low_step_flag'] = row['steps'] < 5000
+          row['active_minutes'] = total_minutes
+
+          if row['vam'] >= 60:
+              row['intensity'] = 'Highly Active'
+          elif row['vam'] >= 30:
+              row['intensity'] = 'Moderately Active'
+          else:
+              row['intensity'] = 'Less Active'
+
+          if row['steps'] < 2500:
+              row['step_group'] = 'Very Low'
+          elif row['steps'] < 5000:
+              row['step_group'] = 'Low'
+          elif row['steps'] < 7500:
+              row['step_group'] = 'Medium'
+          elif row['steps'] < 10000:
+              row['step_group'] = 'Above Average'
+          elif row['steps'] < 12500:
+              row['step_group'] = 'Active'
+          else:
+              row['step_group'] = 'Super Active'
+
+          return row
+
+  keep_valid_rows:
+    type: beam:transform:filter
+    input: enrich_data
+    language: python
+    script: |
+      def has_biweek(row):
+          return row.get('biweek') is not None
+
+  group_by_user_period:
+    type: beam:transform:group_by_key
+    input: keep_valid_rows
+    key: "row['user'] + '_' + str(row['biweek'])"
+
+  summarize_activity:
+    type: beam:transform:map
+    input: group_by_user_period
+    language: python
+    script: |
+      from collections import Counter
+      def summarize(pair):
+          key, group = pair
+          entries = list(group)
+          summary = {
+              'user': entries[0]['user'],
+              'biweek': entries[0]['biweek'],
+              'total_steps': sum(r['steps'] for r in entries),
+              'total_calories': sum(r['calories_burned'] for r in entries),
+              'avg_active_minutes': round(sum(r['active_minutes'] for r in entries) / len(entries), 1),
+              'low_step_days': sum(1 for r in entries if r['low_step_flag']),
+              'most_common_intensity': Counter(r['intensity'] for r in entries).most_common(1)[0][0],
+              'most_common_step_group': Counter(r['step_group'] for r in entries).most_common(1)[0][0]
+          }
+          return summary
+
+outputs:
+  save_to_csv:
+    type: beam:io:csv:write_csv
+    input: summarize_activity
+    location: gs://your-bucket-name/output/fitbit_biweekly_summary.csv
