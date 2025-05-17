@@ -2,13 +2,13 @@ type: beam:runner:portability:python:0.1
 sdk_pipeline_options:
   runner: DataflowRunner
   project: your-gcp-project-id
-  temp_location: gs://your-bucket-name/temp
+  temp_location: gs://bucket-name/temp
   region: us-central1
 
 inputs:
   source_data:
     type: beam:io:csv:read_csv
-    location: gs://your-bucket-name/input/dailyActivity_merged.csv
+    location: gs://bucket-name/input/dailyActivity_merged.csv
     skip_header_lines: 1
 
 transforms:
@@ -102,4 +102,4 @@ outputs:
   save_to_csv:
     type: beam:io:csv:write_csv
     input: summarize_activity
-    location: gs://your-bucket-name/output/fitbit_biweekly_summary.csv
+    location: gs://bucket-name/output/fitbit_biweekly_summary.csv
