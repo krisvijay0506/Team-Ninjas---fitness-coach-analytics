@@ -1,17 +1,23 @@
+# Define the type of runner and SDK for Python Beam
 type: beam:runner:portability:python:0.1
-sdk_pipeline_options:
-  runner: DataflowRunner
-  project: your-gcp-project-id
-  temp_location: gs://bucket-name/temp
-  region: us-central1
 
+# Pipeline options for GCP Dataflow
+sdk_pipeline_options:
+  runner: DataflowRunner                           # Use GCP-managed runner
+  project: gcp-project-id                     # Replace with your actual GCP project
+  temp_location: gs://bucket-name/temp        # Temporary staging location for Beam artifacts
+  region: us-central1                              # GCP region for running the job
+
+# INPUT SECTION
 inputs:
   source_data:
-    type: beam:io:csv:read_csv
+    type: beam:io:csv:read_csv                     # Read input as CSV
     location: gs://bucket-name/input/dailyActivity_merged.csv
-    skip_header_lines: 1
+    skip_header_lines: 1                           # Skip the header row in CSV
 
+# TRANSFORM SECTION
 transforms:
+  # Format and parse input columns
   format_columns:
     type: beam:transform:map
     input: source_data
@@ -32,6 +38,7 @@ transforms:
               row['biweek'] = None
           return row
 
+  # Enrich with classification and metrics
   enrich_data:
     type: beam:transform:map
     input: format_columns
@@ -42,6 +49,7 @@ transforms:
           row['low_step_flag'] = row['steps'] < 5000
           row['active_minutes'] = total_minutes
 
+          # Intensity classification
           if row['vam'] >= 60:
               row['intensity'] = 'Highly Active'
           elif row['vam'] >= 30:
@@ -49,6 +57,7 @@ transforms:
           else:
               row['intensity'] = 'Less Active'
 
+          # Step grouping
           if row['steps'] < 2500:
               row['step_group'] = 'Very Low'
           elif row['steps'] < 5000:
@@ -64,6 +73,7 @@ transforms:
 
           return row
 
+  # Filter out invalid biweeks
   keep_valid_rows:
     type: beam:transform:filter
     input: enrich_data
@@ -72,11 +82,13 @@ transforms:
       def has_biweek(row):
           return row.get('biweek') is not None
 
+  # Group by (user, biweek)
   group_by_user_period:
     type: beam:transform:group_by_key
     input: keep_valid_rows
     key: "row['user'] + '_' + str(row['biweek'])"
 
+  # Aggregate summary statistics
   summarize_activity:
     type: beam:transform:map
     input: group_by_user_period
@@ -98,8 +110,22 @@ transforms:
           }
           return summary
 
+# OUTPUT SECTION
 outputs:
-  save_to_csv:
-    type: beam:io:csv:write_csv
+  write_to_bq:
+    type: beam:io:bigquery:write
     input: summarize_activity
-    location: gs://bucket-name/output/fitbit_biweekly_summary.csv
+    table: gcp-project-id:fitbit_dataset.biweekly_summary     # Replace with the actual project:dataset.table
+    schema: |
+      [
+        {"name": "user", "type": "STRING"},
+        {"name": "biweek", "type": "INTEGER"},
+        {"name": "total_steps", "type": "INTEGER"},
+        {"name": "total_calories", "type": "INTEGER"},
+        {"name": "avg_active_minutes", "type": "FLOAT"},
+        {"name": "low_step_days", "type": "INTEGER"},
+        {"name": "most_common_intensity", "type": "STRING"},
+        {"name": "most_common_step_group", "type": "STRING"}
+      ]
+    create_disposition: CREATE_IF_NEEDED
+    write_disposition: WRITE_TRUNCATE
